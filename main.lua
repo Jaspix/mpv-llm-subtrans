@@ -77,13 +77,11 @@ local function check_ffmpeg(bin)
     return true
 end
 
--- API key is passed to subtrans.py via stdin instead of mpv's subprocess
--- `env` argument: on Windows, `env` replaces the whole child environment
--- (dropping PATH/TEMP/...) and can make process creation fail with "init".
--- Without `env`, the child inherits the full environment of mpv.
-local function get_api_key()
-    return options.api_key
-end
+-- The API key is passed to subtrans.py as a command-line argument instead of
+-- mpv's subprocess `env` argument: on Windows, `env` replaces the whole child
+-- environment (dropping PATH/TEMP/...) and can make process creation fail with
+-- "init", while `stdin_data` is unreliable on Windows. Without `env`, the child
+-- inherits the full environment of mpv.
 
 --- Find compatible python (or uv) execute
 -- @param candidates arrays of candidates, or nil
@@ -272,6 +270,7 @@ local function build_py_args(py_args, py_script, opts, extra_args)
     end
     table.insert(args, py_script)
     for _, v in ipairs({
+        "--api-key", options.api_key,
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
@@ -292,6 +291,23 @@ local function build_py_args(py_args, py_script, opts, extra_args)
         end
     end
     return args
+end
+
+--- Hide the API key when logging args to debug output
+local function redact_args(args)
+    local out = {}
+    local i = 1
+    while i <= #args do
+        if args[i] == "--api-key" then
+            table.insert(out, "--api-key")
+            table.insert(out, "***")
+            i = i + 2
+        else
+            table.insert(out, args[i])
+            i = i + 1
+        end
+    end
+    return out
 end
 
 local running = false
@@ -372,8 +388,7 @@ function llm_subtrans_translate()
     table.insert(created_temp_files, ipc_path)
     os.remove(ipc_path)
 
-    -- API key is passed via stdin; the subprocess inherits the full environment
-    local api_key = get_api_key()
+    -- API key is passed as a CLI arg; the subprocess inherits the full environment
 
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
@@ -388,11 +403,10 @@ function llm_subtrans_translate()
         output_path=srt_path,
         ipc_path=ipc_path,
     })
-    msg.debug("Execute", utils.format_json(tail_args))
+    msg.debug("Execute", utils.format_json(redact_args(tail_args)))
     py_handle = mp.command_native_async({
         name="subprocess",
         args=tail_args,
-        stdin_data=api_key,
         playback_only=false,
     }, function (success, result, error)
         msg.debug("Python script exit:", utils.format_json(result))
@@ -610,8 +624,7 @@ function progressive_translate()
     session.sub_added = false  -- translated subtitle track added to mpv
     session.last_translated_seq = 0  -- for precise chunk boundary skipping
 
-    -- API key is passed via stdin; the subprocess inherits the full environment
-    local api_key = get_api_key()
+    -- API key is passed as a CLI arg; the subprocess inherits the full environment
 
     -- Determine start position from current playback
     local start_pos_sec = mp.get_property_native("time-pos", 0)
@@ -678,7 +691,7 @@ function progressive_translate()
             "--max-duration", string.format("%.3f", end_sec - start_sec),
             "--start-seq", session.last_translated_seq .. "",
         })
-        msg.debug("Execute chunk", utils.format_json(chunk_args))
+        msg.debug("Execute chunk", utils.format_json(redact_args(chunk_args)))
 
         -- Clean up previous IPC timer
         if ipc_read_timer ~= nil then
@@ -689,7 +702,6 @@ function progressive_translate()
         chunk_py_handle = mp.command_native_async({
             name="subprocess",
             args=chunk_args,
-            stdin_data=api_key,
             playback_only=false,
         }, function(success, result, error)
             msg.debug("Chunk #" .. ci .. " exit:", utils.format_json(result))

@@ -7,7 +7,6 @@
 # ///
 import re
 import os
-import sys
 import json
 import time
 import locale
@@ -330,6 +329,7 @@ def translate_subtitle_batch(
 
 @dataclass
 class Args:
+    api_key: str
     model: str
     base_url: str
     ffmpeg_bin: str
@@ -346,12 +346,10 @@ class Args:
     start_seq: int
 
     def build_openai_client(self) -> tuple[OpenAI, str]:
-        key = os.environ.get("OPENAI_API_KEY")
+        key = self.api_key
         if not key:
-            # mpv passes the key via stdin when it is configured in script
-            # options, so the subprocess can inherit the full environment
-            # instead of going through mpv's `env` arg (flaky on Windows).
-            key = sys.stdin.read().strip()
+            # fall back to the environment for manual invocation
+            key = os.environ.get("OPENAI_API_KEY")
         if not key:
             raise KeyError("No OPENAI_API_KEY set")
         base_url = None
@@ -396,6 +394,7 @@ def get_cli_args() -> Args:
         prog="mpv-llm-subtrans",
         description="MPV plugin for translating subtitles with LLM",
     )
+    parser.add_argument("--api-key", default="", help="API key")
     parser.add_argument("--model", default="", help="Model name")
     parser.add_argument("--base-url", default="", help="API base URL")
     parser.add_argument("--ffmpeg-bin", default="", help="ffmpeg execute path")
