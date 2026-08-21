@@ -7,7 +7,9 @@
 # ///
 import re
 import os
+import sys
 import json
+import time
 import locale
 import logging
 import argparse
@@ -16,7 +18,13 @@ from dataclasses import dataclass
 from subprocess import Popen, PIPE
 from typing import IO, Any, Iterator, Optional, TextIO, TypedDict
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
+
+# Some gateways (e.g. AMD) rate-limit aggressively. The OpenAI client retries
+# internally with exponential backoff; this is the extra number of
+# request-level retries after the client gives up.
+MAX_RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_RETRY_DELAY = 3.0
 
 
 PROMPT_DEV = """\
@@ -264,20 +272,36 @@ def translate_subtitle_batch(
         **prompt_vars,
     )
     extra_body = None
-    if model.startswith("deepseek-v4"):
+    if model.lower().startswith("deepseek-v4"):
         # DeepSeek V4 defaults to thinking mode; disable it so the stream
         # carries plain `content` (like deepseek-chat) for the parser below
         extra_body = {"thinking": {"type": "disabled"}}
-    stream = openai.chat.completions.create(
-        model=model,
-        stream=True,
-        messages=[
-            # DeekSeek do not recognize `developer` role, use `system` instead
-            {"role": "system", "content": prompt_dev},
-            {"role": "user", "content": user_prompt},
-        ],
-        extra_body=extra_body,
-    )
+    stream = None
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            stream = openai.chat.completions.create(
+                model=model,
+                stream=True,
+                messages=[
+                    # DeekSeek do not recognize `developer` role, use `system` instead
+                    {"role": "system", "content": prompt_dev},
+                    {"role": "user", "content": user_prompt},
+                ],
+                extra_body=extra_body,
+            )
+            break
+        except RateLimitError as err:
+            if attempt == MAX_RATE_LIMIT_RETRIES:
+                raise
+            delay = RATE_LIMIT_RETRY_DELAY * (attempt + 1)
+            logging.warning(
+                "rate limited (429), retry request in %.0fs (%d/%d)",
+                delay,
+                attempt + 1,
+                MAX_RATE_LIMIT_RETRIES,
+            )
+            time.sleep(delay)
+    assert stream is not None
 
     # parse response
     orig = iter(batch_lines)
@@ -324,6 +348,11 @@ class Args:
     def build_openai_client(self) -> tuple[OpenAI, str]:
         key = os.environ.get("OPENAI_API_KEY")
         if not key:
+            # mpv passes the key via stdin when it is configured in script
+            # options, so the subprocess can inherit the full environment
+            # instead of going through mpv's `env` arg (flaky on Windows).
+            key = sys.stdin.read().strip()
+        if not key:
             raise KeyError("No OPENAI_API_KEY set")
         base_url = None
         model = None
@@ -338,7 +367,8 @@ class Args:
             raise ValueError("No model specified")
         if self.base_url:
             base_url = self.base_url
-        return OpenAI(api_key=key, base_url=base_url), model
+        # Raise the default 2 retries: gateways like AMD often 429.
+        return OpenAI(api_key=key, base_url=base_url, max_retries=5), model
 
     @property
     def dest_lang_with_default(self) -> str:

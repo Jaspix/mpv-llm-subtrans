@@ -77,22 +77,12 @@ local function check_ffmpeg(bin)
     return true
 end
 
-local function get_env_with_api_key()
-    if options.api_key == "" then
-        return nil
-    end
-
-    -- Only pass the required variables to the subprocess.
-    local env = {
-        "OPENAI_API_KEY=" .. options.api_key,
-    }
-
-    local system_root = os.getenv("SystemRoot")
-    local windir = os.getenv("windir")
-    table.insert(env, "SystemRoot=" .. system_root)
-    table.insert(env, "windir=" .. windir)
-
-    return env
+-- API key is passed to subtrans.py via stdin instead of mpv's subprocess
+-- `env` argument: on Windows, `env` replaces the whole child environment
+-- (dropping PATH/TEMP/...) and can make process creation fail with "init".
+-- Without `env`, the child inherits the full environment of mpv.
+local function get_api_key()
+    return options.api_key
 end
 
 --- Find compatible python (or uv) execute
@@ -382,11 +372,8 @@ function llm_subtrans_translate()
     table.insert(created_temp_files, ipc_path)
     os.remove(ipc_path)
 
-    -- check api key & setup env vars
-    local env = get_env_with_api_key()
-    if env == nil then
-        return abort("API key not found")
-    end
+    -- API key is passed via stdin; the subprocess inherits the full environment
+    local api_key = get_api_key()
 
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
@@ -405,7 +392,7 @@ function llm_subtrans_translate()
     py_handle = mp.command_native_async({
         name="subprocess",
         args=tail_args,
-        env=env,
+        stdin_data=api_key,
         playback_only=false,
     }, function (success, result, error)
         msg.debug("Python script exit:", utils.format_json(result))
@@ -623,11 +610,8 @@ function progressive_translate()
     session.sub_added = false  -- translated subtitle track added to mpv
     session.last_translated_seq = 0  -- for precise chunk boundary skipping
 
-    -- Check API key
-    local env = get_env_with_api_key()
-    if env == nil then
-        return abort_session("API key not found")
-    end
+    -- API key is passed via stdin; the subprocess inherits the full environment
+    local api_key = get_api_key()
 
     -- Determine start position from current playback
     local start_pos_sec = mp.get_property_native("time-pos", 0)
@@ -661,7 +645,12 @@ function progressive_translate()
         final:close()
     end
 
-    local function start_chunk(start_sec, end_sec)
+    local CHUNK_INIT_MAX_RETRIES = 3
+    local CHUNK_INIT_RETRY_DELAY_SECS = 1.0
+
+    local function start_chunk(start_sec, end_sec, retry_count)
+        retry_count = retry_count or 0
+        if session == nil then return end
         if chunk_py_handle ~= nil then
             msg.warn("start_chunk called but Python process already running")
             return
@@ -700,7 +689,7 @@ function progressive_translate()
         chunk_py_handle = mp.command_native_async({
             name="subprocess",
             args=chunk_args,
-            env=env,
+            stdin_data=api_key,
             playback_only=false,
         }, function(success, result, error)
             msg.debug("Chunk #" .. ci .. " exit:", utils.format_json(result))
@@ -724,6 +713,19 @@ function progressive_translate()
             end
 
             if result.status ~= 0 then
+                -- mpv on Windows can fail to create the process ("init") with
+                -- a non-empty `env`; retry a few times to ride it out.
+                if result.error_string == "init" and retry_count < CHUNK_INIT_MAX_RETRIES then
+                    msg.warn(string.format(
+                        "chunk #%d init failed, retry in %ds (%d/%d)",
+                        ci, CHUNK_INIT_RETRY_DELAY_SECS, retry_count + 1, CHUNK_INIT_MAX_RETRIES
+                    ))
+                    session.chunk_index = session.chunk_index - 1
+                    mp.add_timeout(CHUNK_INIT_RETRY_DELAY_SECS, function()
+                        start_chunk(start_sec, end_sec, retry_count + 1)
+                    end)
+                    return
+                end
                 -- Try to read panic message from IPC
                 local panic_msg = read_panic_msg(chunk_ipc)
                 if panic_msg ~= nil then
