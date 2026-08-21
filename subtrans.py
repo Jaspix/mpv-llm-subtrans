@@ -263,6 +263,11 @@ def translate_subtitle_batch(
         ),
         **prompt_vars,
     )
+    extra_body = None
+    if model.startswith("deepseek-v4"):
+        # DeepSeek V4 defaults to thinking mode; disable it so the stream
+        # carries plain `content` (like deepseek-chat) for the parser below
+        extra_body = {"thinking": {"type": "disabled"}}
     stream = openai.chat.completions.create(
         model=model,
         stream=True,
@@ -271,6 +276,7 @@ def translate_subtitle_batch(
             {"role": "system", "content": prompt_dev},
             {"role": "user", "content": user_prompt},
         ],
+        extra_body=extra_body,
     )
 
     # parse response
