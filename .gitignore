@@ -1,3 +1,10 @@
 .vscode
 /output.srt
 /output.json
+__pycache__/
+*.py[cod]
+*$py.class
+.subtrans_chunks/
+.venv/
+venv/
+*.log

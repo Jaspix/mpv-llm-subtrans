@@ -5,101 +5,94 @@ A [mpv player](https://mpv.io/) script.
 
 ## Features
 
-- **Fast.** Streaming all the way. Translation began appearing within seconds.
-- **Contextual.** Unlike traditional tools that translate sentence by sentence,
-  we feed long dialogue histories and metadata of video to leverage the
-  contextual understaning capabilities of LLM.
-- **Easy.** Few commands to install. Just setup your API key. One shortcut to start.
+- **Fast & Streaming.** Translation streams line by line and appears within seconds.
+- **Batch-Based & Progressive Chunking.** Translates continuously as you watch with zero dialogue gaps (`chunk_by_batch=yes`), or by time-based windows.
+- **Auto-Healing & Sequence Resiliency.** Recovers seamlessly from model tag hallucinations, duplicate sequence tags, or dropped lines without desync.
+- **Mid-Stream Network Recovery.** Resilient SSE streaming with automatic exponential backoff retries and on-screen status notifications on connection drops.
+- **Reasoning Effort Control.** Configurable reasoning effort (`reasoning_effort=none|low|medium|high`) to balance model nuance against latency.
+- **Contextual.** Feeds conversation context and video metadata to preserve natural phrasing and idiomatic tone.
+- **Multi-Provider Support.** Built-in support for OpenRouter, OpenAI, DeepSeek, and custom OpenAI-compatible endpoints.
+- **Customizable OSD.** Compact, configurable on-screen display (`osd_font_size`) with live percentage and line progress.
 
-Tested on Windows & Ubuntu, other platform should work but not get tested yet.
+Tested on Linux (Ubuntu/Arch) & Windows.
 
-Both internal subtitle in video files and external subtitle files are supported.
-
-**Internal** subtitles rely on ffmpeg and support **both SRT & ASS formats**.
-HTTP(S) videos are supported, although it will be downloaded twice (one for
-playback and one for extracting subtitles). We stream it too, so no worry if
-you got a slow HTTP connection.
-
-**External** subtitles currently only support local SRT files.
+Both internal subtitles in video files and external subtitle files are supported:
+- **Internal** subtitles rely on FFmpeg and support **both SRT & ASS formats**. HTTP(S) video streaming is supported.
+- **External** subtitles support local SRT files.
 
 ### Why you SHOULD NOT use it
 
-This script was made for quick & convenience. If you need tweak the prompt,
-manual adjustment or editing, transcription, etc., use dedicated tools.
+This script is built for fast, frictionless viewing while watching. If you need manual timing adjustment, manual subtitle editing, or speech-to-text audio transcription, use dedicated tools.
 
-Some styles of ASS subtitles will be lost.
+Some complex ASS styles (animations, drawings) are simplified during extraction.
 
 ## Prerequisites
 
 - [FFmpeg](https://www.ffmpeg.org/)
-- [OpenAI](https://platform.openai.com/api-keys) or [DeepSeek](https://platform.deepseek.com/api_keys) API key
-- [uv](https://github.com/astral-sh/uv); or
-  - [Python](https://python.org)
-  - [openai-python](https://github.com/openai/openai-python)
+- [OpenRouter](https://openrouter.ai/), [OpenAI](https://platform.openai.com/api-keys), or [DeepSeek](https://platform.deepseek.com/api_keys) API key
+- [Python](https://python.org) (3.10+) with `openai`:
+  ```bash
+  pip install openai
+  ```
+  *(or use `uv`)*
 
-## Quick start
+## Quick Start
+
+### Linux
+
+```bash
+# 1. Clone this repository into your mpv scripts directory
+git clone https://github.com/jaspix/mpv-llm-subtrans.git ~/.config/mpv/scripts/mpv-llm-subtrans
+
+# 2. Copy the config template and add your API key
+cp ~/.config/mpv/scripts/mpv-llm-subtrans/llm_subtrans.conf ~/.config/mpv/script-opts/
+nano ~/.config/mpv/script-opts/llm_subtrans.conf
+
+# 3. Play any video in mpv
+mpv video.mkv
+# Select the subtitle track you want to translate
+# Press Alt+T to start progressive translation!
+```
 
 ### Windows
 
 ```powershell
-# Before start, install Python & FFmpeg to PATH
-py -m pip install openai
-$env:OPENAI_API_KEY='sk-******'
-mpv --script=.\mpv-llm-subtrans video.mp4
-# Select the substitles you want to translate (if not the first one)
-# Press Alt-T on mpv window
+# 1. Clone into your mpv scripts directory
+git clone https://github.com/jaspix/mpv-llm-subtrans.git "$env:APPDATA\mpv\scripts\mpv-llm-subtrans"
+
+# 2. Copy the config template and edit it
+copy "$env:APPDATA\mpv\scripts\mpv-llm-subtrans\llm_subtrans.conf" "$env:APPDATA\mpv\script-opts\"
+notepad "$env:APPDATA\mpv\script-opts\llm_subtrans.conf"
+
+# 3. Play video with mpv and press Alt+T
 ```
 
-Note: if you have `uv` installed on Windows, make sure mpv is v0.39 or above.
+## Configuration
 
-### Ubuntu
+See [`llm_subtrans.conf`](llm_subtrans.conf) for all options.
 
-```bash
-sudo apt install ffmpeg python3-openai
-export OPENAI_API_KEY='sk-******'
-mpv --script=./mpv-llm-subtrans video.mp4
-# Select the substitles you want to translate (if not the first one)
-# Press Alt-T on mpv window
-```
+Key settings include:
+- `api_key`: Your API key (or set the `OPENAI_API_KEY` environment variable).
+- `model`: Target model (e.g., `deepseek/deepseek-chat`, `gpt-4o-mini`, `nvidia/nemotron-3.5-lightning`).
+- `dest_lang`: Target language (e.g., `es`, `es-la`, `ja`, `fr`, `zh`). Default is system language or English.
+- `chunk_by_batch`: (Default `yes`) Chunks by batch count (e.g. 50 lines) instead of fixed seconds to prevent dialogue cutoff.
+- `continuous_mode`: (Default `no`) Translates subsequent chunks immediately in the background without waiting for playback to approach the threshold.
+- `reasoning_effort`: Set to `none`, `low`, `medium`, or `high` for reasoning-capable models.
+- `osd_font_size`: Adjust the size of status and progress messages (default: `20`).
 
-## Configurtion
+## Tested Models & Providers
 
-See [llm_subtrans.conf](llm_subtrans.conf).
+- **OpenRouter**:
+  - `deepseek/deepseek-chat` (Recommended for cost/speed)
+  - `openai/gpt-4o-mini`
+  - `nvidia/nemotron-3.5-lightning`
+  - `google/gemini-2.5-flash`
+- **OpenAI**: `gpt-4o-mini`, `gpt-4o`
+- **DeepSeek**: `deepseek-chat`
 
-Put this file on `%APPDATA%\mpv\script-opts\` or `~/.config/mpv/script-opts/`.
+## Shortcuts & Controls
 
-## Tested models
+- `Alt+T`: Toggle **progressive translation** (translates ahead from current playback position). Press again to cancel.
+- `Alt+Shift+T`: Toggle **full translation** (translates the entire subtitle track in one pass). Press again to cancel.
 
-You can try any OpenAI API-compatible service, but some don't follow our prompt very well.
-
-Working:
-
-- `gpt-4o-mini` from OpenAI
-- `deepseek-chat` from DeepSeek
-
-Not working:
-
-- `gemini-2.5-pro-exp-03-25` from Gemini
-
-## Tips
-
-- Two translation modes are available:
-  - `Alt+T` starts **progressive translation**: it starts from the current
-    playback position and translates ahead in chunks (default 5 minutes,
-    configurable via `pre_translate_seconds`). It continues automatically
-    when playback approaches the end of the translated content (default
-    within 60 seconds, configurable via `advance_threshold_seconds`).
-    Press again to cancel.
-  - `Alt+Shift+T` starts **full translation**: translates all subtitles
-    from the beginning to the end in one pass. Press again to cancel.
-- You can watch while the translation is in progress. As long as the
-  translation progess (displayed in the upper left corner) exceeds your
-  playback progress, you will not miss a sentence.
-- Translated subtitles are saved as `<video name>.srt` next to the video
-  file by default. For videos without a local path (e.g. HTTP streams),
-  they fall back to the Desktop. You can override the directory with the
-  `output_dir` option.
-
-Both modes load translated subtitles on the fly, and temporary files
-(`.subtrans_chunks` directories and `.progress` files) are cleaned up
-automatically when mpv exits.
+Subtitles are loaded automatically on the fly as each line streams in. Temporary chunk files are cleaned up automatically when mpv exits. Detailed error logs are written to `llm_subtrans_error.log` if an API error occurs.
