@@ -5,16 +5,15 @@ A [mpv player](https://mpv.io/) script.
 
 ## Features
 
-- **Fast & Streaming.** Translation streams line by line and appears within seconds.
+- **Fast & Streaming.** Translation streams line by line and appears within seconds after some startup time.
 - **Batch-Based & Progressive Chunking.** Translates continuously as you watch with zero dialogue gaps (`chunk_by_batch=yes`), or by time-based windows.
-- **Auto-Healing & Sequence Resiliency.** Recovers seamlessly from model tag hallucinations, duplicate sequence tags, or dropped lines without desync.
-- **Mid-Stream Network Recovery.** Resilient SSE streaming with automatic exponential backoff retries and on-screen status notifications on connection drops.
-- **Reasoning Effort Control.** Configurable reasoning effort (`reasoning_effort=none|low|medium|high`) to balance model nuance against latency.
+- **Auto-Healing, Error Handling & Sequence Resiliency.** Recovers seamlessly from model tag hallucinations, duplicate sequence tags, or dropped lines without desync.
+- **Reasoning Effort Control.** Configurable reasoning effort (`reasoning_effort=none|low|medium|high`) .
 - **Contextual.** Feeds conversation context and video metadata to preserve natural phrasing and idiomatic tone.
 - **Multi-Provider Support.** Built-in support for OpenRouter, OpenAI, DeepSeek, and custom OpenAI-compatible endpoints.
 - **Customizable OSD.** Compact, configurable on-screen display (`osd_font_size`) with live percentage and line progress.
 
-Tested on Linux (Ubuntu/Arch) & Windows.
+Tested on Linux (Arch), might work with Windows.
 
 Both internal subtitles in video files and external subtitle files are supported:
 - **Internal** subtitles rely on FFmpeg and support **both SRT & ASS formats**. HTTP(S) video streaming is supported.
@@ -24,7 +23,7 @@ Both internal subtitles in video files and external subtitle files are supported
 
 This script is built for fast, frictionless viewing while watching. If you need manual timing adjustment, manual subtitle editing, or speech-to-text audio transcription, use dedicated tools.
 
-Some complex ASS styles (animations, drawings) are simplified during extraction.
+Some complex ASS styles (animations, drawings) are simplified during extraction. (.ass subtitle compatibility in progress)
 
 ## Prerequisites
 
@@ -54,18 +53,6 @@ mpv video.mkv
 # Press Alt+T to start progressive translation!
 ```
 
-### Windows
-
-```powershell
-# 1. Clone into your mpv scripts directory
-git clone https://github.com/jaspix/mpv-llm-subtrans.git "$env:APPDATA\mpv\scripts\mpv-llm-subtrans"
-
-# 2. Copy the config template and edit it
-copy "$env:APPDATA\mpv\scripts\mpv-llm-subtrans\llm_subtrans.conf" "$env:APPDATA\mpv\script-opts\"
-notepad "$env:APPDATA\mpv\script-opts\llm_subtrans.conf"
-
-# 3. Play video with mpv and press Alt+T
-```
 
 ## Configuration
 
@@ -83,7 +70,10 @@ Key settings include:
 ## Tested Models & Providers
 
 - **OpenRouter**:
-  - `deepseek/deepseek-chat` (Recommended for cost/speed)
+  - `openai/gpt-5.6-luna` (Recommended for cost/speed)
+  - `google/gemini-3.8-flash`
+  - `z-ai/glm-5.3-flash`
+  - `deepseek/deepseek-v4.1-flash`
   - `openai/gpt-4o-mini`
   - `nvidia/nemotron-3.5-lightning`
   - `google/gemini-2.5-flash`
@@ -95,4 +85,4 @@ Key settings include:
 - `Alt+T`: Toggle **progressive translation** (translates ahead from current playback position). Press again to cancel.
 - `Alt+Shift+T`: Toggle **full translation** (translates the entire subtitle track in one pass). Press again to cancel.
 
-Subtitles are loaded automatically on the fly as each line streams in. Temporary chunk files are cleaned up automatically when mpv exits. Detailed error logs are written to `llm_subtrans_error.log` if an API error occurs.
+Subtitles are loaded automatically on the fly as each line streams in. Temporary chunk files are cleaned up automatically when mpv exits. Detailed error logs are written to `llm_subtrans_error.log` if an error occurs.
