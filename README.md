@@ -50,7 +50,7 @@ nano ~/.config/mpv/script-opts/llm_subtrans.conf
 # 3. Play any video in mpv
 mpv video.mkv
 # Select the subtitle track you want to translate
-# Press Alt+T to start progressive translation!
+# Press Alt+T to start progressive translation
 ```
 
 
@@ -76,7 +76,7 @@ Key settings include:
   - `deepseek/deepseek-v4.1-flash`
   - `openai/gpt-4o-mini`
   - `nvidia/nemotron-3.5-lightning`
-  - `google/gemini-2.5-flash`
+  - `prism-ml/ternary-bonsai-2-27b`
 - **OpenAI**: `gpt-4o-mini`, `gpt-4o`
 - **DeepSeek**: `deepseek-chat`
 
