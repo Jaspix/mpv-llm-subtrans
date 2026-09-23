@@ -14,9 +14,13 @@ import logging
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
+import shutil
+import tempfile
+import subprocess
 from subprocess import Popen, PIPE
 from typing import IO, Any, Iterator, Optional, TextIO, TypedDict
 
+import ass_parser
 from openai import OpenAI, RateLimitError, APIError, APIConnectionError, APITimeoutError
 
 # Some gateways (e.g. AMD) rate-limit aggressively. The OpenAI client retries
@@ -53,6 +57,38 @@ CRITICAL RULES:
      [21] Parece que ahora le ponen nombre a <i>todo</i>.
 5. NEVER insert annotations, brackets, or commentary like [seguirá], [continúa], or [notes] into the dialogue unless it was in the original line.
 6. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
+
+{extra_prompt}\
+"""
+
+PROMPT_ASS_DEV = """\
+You are an expert anime subtitle and typesetting translator.
+Translate the given subtitle lines into {dest_lang}.
+
+CRITICAL RULES:
+1. Each line begins with a numeric ID tag like [123]. Output EXACTLY one translated line for each input line with the matching numeric [ID] (never replace numbers with words).
+2. DO NOT merge, omit, reorder, or split lines. Every input [ID] must appear in the output.
+3. Spoken Dialogue vs Signs/Headlines:
+   - Input lines include spoken anime dialogue as well as on-screen signs, shopfronts, newspaper headlines, and UI text.
+   - Translate all of them naturally according to context into {dest_lang}.
+4. Subtitle Linebreaks (\\N):
+   - The literal characters \\N represent a subtitle linebreak for screen typesetting.
+   - If an input line contains \\N, ALWAYS keep \\N intact in your translation at an appropriate phrase break.
+   - NEVER output consecutive \\N (e.g. NEVER write \\N\\N).
+   - NEVER convert \\N into spaces, literal newlines, or remove it.
+   Example:
+     Input:
+     [10] How am I not included? \\N This is totally false advertising!
+     Output:
+     [10] ¿Cómo no estoy incluida? \\N ¡Esto es totalmente publicidad engañosa!
+5. Formatting tags:
+   - Preserve HTML formatting tags (e.g. <i>...</i>, <b>...</b>, <u>...</u>).
+   - Apply them accurately to the corresponding translated words to maintain visual emphasis.
+6. Dialogue spanning multiple lines:
+   - Even if a sentence spans multiple lines, translate each line piece-by-piece so line boundaries match audio timing.
+   - DO NOT complete the sentence early in the first line! Translate ONLY the words that belong to that line.
+7. NEVER insert annotations, brackets, or commentary like [seguirá], [continúa], or [notes] into the dialogue unless it was in the original line.
+8. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
 
 {extra_prompt}\
 """
@@ -315,7 +351,10 @@ def translate_subtitle(
     ipc: Optional[TextIO] = None,
     args: Optional["Args"] = None,
 ) -> Iterator[SubtitleLine]:
-    prompt_dev = PROMPT_DEV.format(**prompt_vars)
+    if prompt_vars.get("format") == "ass":
+        prompt_dev = PROMPT_ASS_DEV.format(**prompt_vars)
+    else:
+        prompt_dev = PROMPT_DEV.format(**prompt_vars)
     batch_count = 0
     batch = list(iter_take(lines, batch_size))
     total_translated = 0
@@ -660,6 +699,7 @@ def drain_buf(
     remaining_seqs: list[int],
     handled_seqs: set[int],
     is_flush: bool = False,
+    is_ass: bool = False,
 ) -> list[SubtitleLine]:
     results = []
     while buf.has_entry():
@@ -759,7 +799,19 @@ def drain_buf(
                 restored_text = orig_text
             else:
                 restored_text = apply_translation_to_text(orig_text, raw_text)
-            wrapped_lines = wrap_subtitle_text(restored_text)
+            if is_ass:
+                # In ASS, linebreaks are represented by \N.
+                # Convert any literal newlines from the model to \N
+                cleaned_ass = restored_text.replace("\r\n", r"\N").replace("\n", r"\N")
+                # Collapse multiple consecutive \N
+                cleaned_ass = re.sub(r"(?:\\[Nnh]\s*)+", r"\\N", cleaned_ass)
+                # Strip spaces around \N
+                cleaned_ass = re.sub(r"[ \t]*\\N[ \t]*", r"\\N", cleaned_ass)
+                # Strip trailing/leading \N
+                cleaned_ass = re.sub(r"^(?:\\N)+|(?:\\N)+$", "", cleaned_ass).strip()
+                wrapped_lines = [cleaned_ass]
+            else:
+                wrapped_lines = wrap_subtitle_text(restored_text)
             results.append(SubtitleLine(src_line.seq, src_line.time_line, wrapped_lines))
     return results
 
@@ -904,6 +956,7 @@ def translate_subtitle_batch(
     assert stream is not None
 
     # parse response
+    is_ass = prompt_vars.get("format") == "ass"
     known_seqs = {l.seq for l in batch_lines}
     orig_by_seq = {l.seq: l for l in batch_lines}
     remaining_seqs = [l.seq for l in batch_lines]
@@ -920,19 +973,19 @@ def translate_subtitle_batch(
             if content:
                 buf.put(content)
 
-            for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=False):
+            for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=False, is_ass=is_ass):
                 yield line
 
             if choice.finish_reason is not None:
                 if choice.finish_reason not in ("stop", "length"):
                     logging.warning("unknown finish reason %s", choice.finish_reason)
                 buf.flush()
-                for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=True):
+                for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=True, is_ass=is_ass):
                     yield line
                 return
 
         buf.flush()
-        for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=True):
+        for line in drain_buf(buf, orig_by_seq, remaining_seqs, handled_seqs, is_flush=True, is_ass=is_ass):
             yield line
     except Exception as err:
         setattr(err, "_raw_response", buf.get_raw_history())
@@ -1005,6 +1058,7 @@ class Args:
     start_seq: int
     reasoning_effort: str = "none"
     max_lines: int = 0
+    format: str = "auto"
 
     def build_openai_client(self) -> tuple[OpenAI, str]:
         key = self.api_key
@@ -1122,6 +1176,12 @@ def get_cli_args() -> Args:
         default="none",
         help="Reasoning effort level: none, low, medium, high",
     )
+    parser.add_argument(
+        "--format",
+        default="auto",
+        choices=["auto", "srt", "ass"],
+        help="Subtitle format: auto, srt, ass",
+    )
     return Args(**vars(parser.parse_args()))
 
 
@@ -1162,7 +1222,199 @@ def filter_by_offset(
             return
 
 
-def process(args: Args, ipc: TextIO):
+def extract_ass_from_video(
+    ffmpeg_bin: str, video_url: str, sub_track_id: int
+) -> str:
+    """
+    Extract embedded ASS subtitle track from video as raw string.
+    
+    Tries mkvextract first for 100% byte-for-byte fidelity on Matroska (MKV) files,
+    falling back to ffmpeg if mkvextract is missing, the file is not MKV, or extraction fails.
+    """
+    mkvextract_bin = shutil.which("mkvextract")
+    mkvmerge_bin = shutil.which("mkvmerge")
+
+    is_local_file = False
+    try:
+        is_local_file = Path(video_url).is_file()
+    except Exception:
+        pass
+
+    if mkvextract_bin and mkvmerge_bin and is_local_file:
+        try:
+            probe_cmd = [mkvmerge_bin, "-J", video_url]
+            res = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+            probe_data = json.loads(res.stdout)
+            
+            sub_tracks = [
+                t for t in probe_data.get("tracks", [])
+                if t.get("type") == "subtitles"
+            ]
+            
+            if 0 <= sub_track_id < len(sub_tracks):
+                target_track = sub_tracks[sub_track_id]
+                mkv_track_id = target_track["id"]
+                codec = target_track.get("codec", "").lower()
+                logging.info(
+                    "Found MKV subtitle track %d (mkv track id %d, codec %s); extracting with mkvextract",
+                    sub_track_id,
+                    mkv_track_id,
+                    codec,
+                )
+                
+                with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as tmp:
+                    tmp_ass_path = tmp.name
+
+                try:
+                    extract_cmd = [
+                        mkvextract_bin,
+                        "tracks",
+                        video_url,
+                        f"{mkv_track_id}:{tmp_ass_path}",
+                    ]
+                    logging.info("Extract ASS via mkvextract: %s", " ".join(extract_cmd))
+                    extract_res = subprocess.run(extract_cmd, capture_output=True, text=True)
+                    if extract_res.returncode == 0 and Path(tmp_ass_path).is_file():
+                        raw_bytes = Path(tmp_ass_path).read_bytes()
+                        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1", "gb18030", "shift_jis"):
+                            try:
+                                content = raw_bytes.decode(enc)
+                                logging.info("Successfully extracted ASS via mkvextract (%d bytes, enc=%s)", len(raw_bytes), enc)
+                                return content
+                            except UnicodeDecodeError:
+                                continue
+                        return raw_bytes.decode("utf-8", errors="replace")
+                finally:
+                    try:
+                        Path(tmp_ass_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.warning("mkvextract extraction attempt failed, falling back to ffmpeg: %s", e)
+
+    args = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        video_url,
+        "-map",
+        f"0:s:{sub_track_id}",
+        "-f",
+        "ass",
+        "-",
+    ]
+    logging.info("Extract ASS via ffmpeg: %s", " ".join(args))
+    with Popen(args, stdout=PIPE, encoding="utf-8", errors="replace") as proc:
+        assert proc.stdout is not None
+        content = proc.stdout.read()
+        ret = proc.wait()
+        if ret != 0:
+            raise RuntimeError(f"ffmpeg exit with {ret}")
+        return content
+
+
+def process_ass(args: Args, ipc: TextIO):
+    openai, model = args.build_openai_client()
+    logging.info("Target language: %s", args.dest_lang_with_default)
+    logging.info("Model: %s", model)
+    logging.info("Format: ASS (whole-file)")
+
+    if args.subtitle_url:
+        logging.info("Parsing external ASS file: %s", args.subtitle_url)
+        doc = ass_parser.parse_ass_file(args.subtitle_url)
+    else:
+        logging.info("Extracting embedded ASS from video: %s (track %d)", args.video_url, args.sub_track_id)
+        raw_ass = extract_ass_from_video(args.ffmpeg_bin, args.video_url, args.sub_track_id)
+        import io
+        doc = ass_parser.parse_ass_stream(io.StringIO(raw_ass))
+
+    logging.info("Total ASS events in document: %d", len(doc.events))
+
+    units = ass_parser.prepare_translation_units(doc)
+    total_units = len(units)
+    logging.info("Prepared %d unique translatable units from %d events", total_units, len(doc.events))
+
+    output_path = Path(args.output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if total_units == 0:
+        logging.warning("No translatable content found in ASS file")
+        ass_parser.write_ass_file(doc, output_path)
+        ipc.seek(0)
+        json.dump(dict(status="completed", format="ass", lines_done=0, total_lines=0, is_eof=True), ipc)
+        ipc.truncate()
+        ipc.flush()
+        return
+
+    # Convert units to SubtitleLine objects for translate_subtitle
+    sub_lines = [
+        SubtitleLine(seq=u.id, time_line="00:00:00,000 --> 00:00:00,000", text_lines=[u.payload])
+        for u in units
+    ]
+
+    prompt_vars = dict(args.prompt_vars)
+    prompt_vars["format"] = "ass"
+
+    translated = translate_subtitle(
+        openai=openai,
+        model=model,
+        batch_size=args.batch_size,
+        prompt_vars=prompt_vars,
+        lines=iter(sub_lines),
+        ipc=ipc,
+        args=args,
+    )
+
+    translated_map: dict[int, str] = {}
+    for line in translated:
+        # Convert any linebreaks in text_lines back to \N for ASS
+        translated_text = r"\N".join(line.text_lines)
+        translated_text = re.sub(r"(?:\\[Nnh]\s*)+", r"\\N", translated_text)
+        translated_text = re.sub(r"[ \t]*\\N[ \t]*", r"\\N", translated_text)
+        translated_map[line.seq] = translated_text
+
+        # Live update of ASS file on disk using precomputed units (zero unit drift)
+        ass_parser.apply_translation_units(doc, units, translated_map)
+        ass_parser.write_ass_file(doc, output_path)
+
+        ipc.seek(0)
+        json.dump(
+            dict(
+                status="translating",
+                format="ass",
+                lines_done=len(translated_map),
+                total_lines=total_units,
+                last_seq=line.seq,
+                is_eof=False,
+            ),
+            ipc,
+        )
+        ipc.truncate()
+        ipc.flush()
+
+    # Final write & completion status
+    ass_parser.apply_translation_units(doc, units, translated_map)
+    ass_parser.write_ass_file(doc, output_path)
+    logging.info("ASS translation completed: wrote %s (%d/%d units translated)", output_path, len(translated_map), total_units)
+
+    ipc.seek(0)
+    json.dump(
+        dict(
+            status="completed",
+            format="ass",
+            lines_done=len(translated_map),
+            total_lines=total_units,
+            is_eof=True,
+        ),
+        ipc,
+    )
+    ipc.truncate()
+    ipc.flush()
+
+
+def process_srt(args: Args, ipc: TextIO):
     openai, model = args.build_openai_client()
     logging.info("Target language: %s", args.dest_lang_with_default)
     logging.info("Model: %s", model)
@@ -1270,6 +1522,27 @@ def process(args: Args, ipc: TextIO):
         )
         ipc.truncate()
         ipc.flush()
+
+
+def process(args: Args, ipc: TextIO):
+    """Route subtitle processing based on detected or specified format."""
+    is_ass = False
+    if args.format == "ass":
+        is_ass = True
+    elif args.format == "auto":
+        if args.subtitle_url:
+            sub_lower = args.subtitle_url.lower()
+            if sub_lower.endswith(".ass") or sub_lower.endswith(".ssa"):
+                is_ass = True
+        elif args.output_path:
+            out_lower = args.output_path.lower()
+            if out_lower.endswith(".ass") or out_lower.endswith(".ssa"):
+                is_ass = True
+
+    if is_ass:
+        process_ass(args, ipc)
+    else:
+        process_srt(args, ipc)
 
 
 def main():

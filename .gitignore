@@ -8,3 +8,4 @@ __pycache__/
 .venv/
 venv/
 *.log
+PRE_PUSH_REVIEW.md

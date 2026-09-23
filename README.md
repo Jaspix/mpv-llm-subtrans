@@ -1,33 +1,33 @@
 # llm-subtrans
 
-Translate video subtitles with OpenAI(-compatible) language models.
+Translate video subtitles with OpenAI-compatible language models.
 A [mpv player](https://mpv.io/) script.
 
 ## Features
 
-- **Fast & Streaming.** Translation streams line by line and appears within seconds after some startup time.
-- **Batch-Based & Progressive Chunking.** Translates continuously as you watch with zero dialogue gaps (`chunk_by_batch=yes`), or by time-based windows.
+- **Fast & Streaming.** Translation streams as soon as it get translated.
+- **Native ASS & Fansub Support.** Translates `.ass` subtitles while preserving styles, colors, coordinates, and inline markup. Vector drawings and generated song effects are passed through 100% untouched.
+- **Batch-Based & Progressive Chunking.** Translates continuously as you watch with zero dialogue gaps (`chunk_by_batch=yes`), or by time-based windows. (.srt only)
 - **Auto-Healing, Error Handling & Sequence Resiliency.** Recovers seamlessly from model tag hallucinations, duplicate sequence tags, or dropped lines without desync.
-- **Reasoning Effort Control.** Configurable reasoning effort (`reasoning_effort=none|low|medium|high`) .
+- **Reasoning Effort Control.** Configurable reasoning effort (`reasoning_effort=none|low|medium|high`).
 - **Contextual.** Feeds conversation context and video metadata to preserve natural phrasing and idiomatic tone.
 - **Multi-Provider Support.** Built-in support for OpenRouter, OpenAI, DeepSeek, and custom OpenAI-compatible endpoints.
 - **Customizable OSD.** Compact, configurable on-screen display (`osd_font_size`) with live percentage and line progress.
 
-Tested on Linux (Arch), might work with Windows.
+Tested on Linux (Arch), might work on Windows.
 
 Both internal subtitles in video files and external subtitle files are supported:
-- **Internal** subtitles rely on FFmpeg and support **both SRT & ASS formats**. HTTP(S) video streaming is supported.
-- **External** subtitles support local SRT files.
+- **Internal** subtitles rely on FFmpeg or mkvtoolnix-cli and support **both SRT & ASS formats**. HTTP(S) video streaming is supported.
+- **External** subtitles support local SRT (`.srt`) and ASS (`.ass` / `.ssa`) files.
 
 ### Why you SHOULD NOT use it
 
 This script is built for fast, frictionless viewing while watching. If you need manual timing adjustment, manual subtitle editing, or speech-to-text audio transcription, use dedicated tools.
 
-Some complex ASS styles (animations, drawings) are simplified during extraction. (.ass subtitle compatibility in progress)
-
 ## Prerequisites
 
 - [FFmpeg](https://www.ffmpeg.org/)
+- [MKVToolNix](https://mkvtoolnix.download/) (optional, better for .ass sub extraction)
 - [OpenRouter](https://openrouter.ai/), [OpenAI](https://platform.openai.com/api-keys), or [DeepSeek](https://platform.deepseek.com/api_keys) API key
 - [Python](https://python.org) (3.10+) with `openai`:
   ```bash
@@ -82,7 +82,7 @@ Key settings include:
 
 ## Shortcuts & Controls
 
-- `Alt+T`: Toggle **progressive translation** (translates ahead from current playback position). Press again to cancel.
-- `Alt+Shift+T`: Toggle **full translation** (translates the entire subtitle track in one pass). Press again to cancel.
+- `Alt+T` (.srt and .ass): Toggle **progressive translation** (translates ahead from current playback position). Press again to cancel.
+- `Alt+Shift+T` (.srt only): Toggle **full translation** (translates the entire subtitle track in one pass). Press again to cancel.
 
 Subtitles are loaded automatically on the fly as each line streams in. Temporary chunk files are cleaned up automatically when mpv exits. Detailed error logs are written to `llm_subtrans_error.log` if an error occurs.

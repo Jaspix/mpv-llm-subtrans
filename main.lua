@@ -250,9 +250,8 @@ local function get_video_url(sub_track)
     if sub_track["external"] then
         ext_sub_url = sub_track["external-filename"]
         msg.info("External subtitle " .. ext_sub_url)
-        if not ext_sub_url:match("%.srt$") then
-            -- TODO: support ass subtitle?
-            return nil, nil, "only support SubRip (.srt) for external subtitles"
+        if not (ext_sub_url:match("%.srt$") or ext_sub_url:match("%.ass$") or ext_sub_url:match("%.ssa$")) then
+            return nil, nil, "only support SubRip (.srt) and ASS (.ass/.ssa) for external subtitles"
         end
         if ext_sub_url:match("^https?://") then
             -- TODO: support http subtitle?
@@ -263,6 +262,26 @@ local function get_video_url(sub_track)
     -- TODO: check video url protocol
     local video_url = mp.get_property("path")
     return video_url, ext_sub_url, nil
+end
+
+--- Detect subtitle format (ass or srt) from track codec or file extension
+-- @return "ass" | "srt"
+local function detect_sub_format(sub_track, ext_sub_url)
+    if ext_sub_url ~= nil and ext_sub_url ~= "" then
+        local lower = ext_sub_url:lower()
+        if lower:match("%.ass$") or lower:match("%.ssa$") then
+            return "ass"
+        else
+            return "srt"
+        end
+    end
+    if sub_track ~= nil and sub_track["codec"] ~= nil then
+        local codec = tostring(sub_track["codec"]):lower()
+        if codec == "ass" or codec == "ssa" then
+            return "ass"
+        end
+    end
+    return "srt"
 end
 
 local LANG_NAME_TO_ISO = {
@@ -354,10 +373,11 @@ local function get_iso_lang_code(dest_lang)
     return "trans"
 end
 
---- Resolve output directory and srt file path
+--- Resolve output directory and subtitle file path
 -- @param ext_sub_url external subtitle path (if any)
--- @return output_dir, srt_path, lang_code
-local function resolve_output_path(ext_sub_url)
+-- @param sub_format "ass" | "srt"
+-- @return output_dir, sub_path, lang_code
+local function resolve_output_path(ext_sub_url, sub_format)
     local output_dir
     if options.output_dir == "" then
         -- default: save next to the currently playing video file
@@ -380,19 +400,20 @@ local function resolve_output_path(ext_sub_url)
 
     local lang_code = get_iso_lang_code(options.dest_lang)
     local video_basename = mp.get_property("filename/no-ext")
-    local srt_filename = video_basename .. "." .. lang_code .. ".srt"
-    local srt_path = utils.join_path(output_dir, srt_filename)
+    local ext = (sub_format == "ass") and ".ass" or ".srt"
+    local sub_filename = video_basename .. "." .. lang_code .. ext
+    local sub_path = utils.join_path(output_dir, sub_filename)
 
     -- CRITICAL SAFETY CHECK: Never overwrite the source external subtitle file!
     if ext_sub_url ~= nil and ext_sub_url ~= "" then
         local normalized_ext = mp.command_native({"expand-path", ext_sub_url})
-        if srt_path == normalized_ext or srt_path == ext_sub_url then
-            srt_filename = video_basename .. "." .. lang_code .. ".translated.srt"
-            srt_path = utils.join_path(output_dir, srt_filename)
+        if sub_path == normalized_ext or sub_path == ext_sub_url then
+            sub_filename = video_basename .. "." .. lang_code .. ".translated" .. ext
+            sub_path = utils.join_path(output_dir, sub_filename)
         end
     end
 
-    return output_dir, srt_path, lang_code
+    return output_dir, sub_path, lang_code
 end
 
 --- Read {panic: "msg"} from ipc file
@@ -408,7 +429,7 @@ end
 --- Build full python args list (without mutating py_args)
 -- @param py_args python executable args
 -- @param py_script path to subtrans.py
--- @param opts table: video_url, ext_sub_url, sub_track, output_path, ipc_path
+-- @param opts table: video_url, ext_sub_url, sub_track, output_path, ipc_path, sub_format
 -- @param extra_args optional array of extra args to append
 -- @return args array
 local function build_py_args(py_args, py_script, opts, extra_args)
@@ -431,6 +452,7 @@ local function build_py_args(py_args, py_script, opts, extra_args)
         "--output-path", opts.output_path or "",
         "--ipc-path", opts.ipc_path or "",
         "--reasoning-effort", options.reasoning_effort or "none",
+        "--format", opts.sub_format or "auto",
     }) do
         table.insert(args, v)
     end
@@ -550,9 +572,12 @@ local function do_full_translate()
         return abort(url_err)
     end
 
+    local sub_format = forced_format or detect_sub_format(sub_track, ext_sub_url)
+    msg.info("Subtitle format detected: " .. sub_format)
+
     -- set file path
     show("initializing")
-    local output_dir, srt_path, lang_code = resolve_output_path(ext_sub_url)
+    local output_dir, srt_path, lang_code = resolve_output_path(ext_sub_url, sub_format)
     msg.info("Save file to", srt_path)
 
     -- set ipc file
@@ -574,6 +599,7 @@ local function do_full_translate()
         sub_track=sub_track,
         output_path=srt_path,
         ipc_path=ipc_path,
+        sub_format=sub_format,
     })
     msg.debug("Execute", utils.format_json(redact_args(tail_args)))
     py_handle = mp.command_native_async({
@@ -619,15 +645,22 @@ local function do_full_translate()
         rpc_file:seek("set")
         local progress = utils.parse_json(rpc_file:read("*a"))
         if progress == nil then return end -- ignore parse error
+
         -- check if progress got updated
-        if last_progress ~= nil and
-            last_progress["last_seq"] >= progress["last_seq"]
-        then return end
+        if last_progress ~= nil then
+            if progress["format"] == "ass" then
+                if last_progress["lines_done"] == progress["lines_done"] then
+                    return
+                end
+            elseif last_progress["last_seq"] and progress["last_seq"] and last_progress["last_seq"] >= progress["last_seq"] then
+                return
+            end
+        end
         msg.info("Progress: " .. utils.format_json(progress))
 
         -- set/reload subtitle
         if last_progress == nil then
-            -- first update, active substitles now
+            -- first update, activate subtitles now
             msg.info("Set translated subtitles")
             mp.command_native({
                 name="sub-add",
@@ -636,16 +669,20 @@ local function do_full_translate()
             })
             last_progress = progress
         else
-            -- only reload when necessary
-            local old_sub_end_pos = last_progress["last_timestamp_millis"][2]
-            local new_sub_start_pos = progress["last_timestamp_millis"][1]
-            local pos = mp.get_property_native("time-pos", 0) * 1000
-            -- condition 1/2: run out of dialogous
-            if old_sub_end_pos - pos < CHECK_INTERVAL_SECS * 2 * 1000 then
-                -- condition 2/2: new file coverd current play position
-                if new_sub_start_pos > pos then
-                    msg.info("Reload translated subtitles")
-                    mp.command_native({name="sub-reload"})
+            if progress["format"] == "ass" then
+                -- For ASS, reload when new units finish
+                msg.info("Reload translated ASS subtitles")
+                mp.command_native({name="sub-reload"})
+            elseif progress["last_timestamp_millis"] ~= nil and last_progress["last_timestamp_millis"] ~= nil then
+                -- only reload when necessary for SRT
+                local old_sub_end_pos = last_progress["last_timestamp_millis"][2]
+                local new_sub_start_pos = progress["last_timestamp_millis"][1]
+                local pos = mp.get_property_native("time-pos", 0) * 1000
+                if old_sub_end_pos - pos < CHECK_INTERVAL_SECS * 2 * 1000 then
+                    if new_sub_start_pos > pos then
+                        msg.info("Reload translated subtitles")
+                        mp.command_native({name="sub-reload"})
+                    end
                 end
             end
             last_progress = progress
@@ -654,22 +691,31 @@ local function do_full_translate()
         -- update progress
         local model_name = options.model ~= "" and options.model or "default"
         local short_model = model_name:match("[^/]+$") or model_name
-        local total_sec = mp.get_property_native("duration/full", nil)
-        local pos_sec = progress["last_timestamp_millis"][2] / 1000
-        local lines_info = progress["lines_done"] and string.format(" (%d lines)", progress["lines_done"]) or ""
+
         if progress["status"] == "rate_limited" then
             show(string.format("{\\c&H00FFFF&}Rate limit (429) - retry in %ds (%d/%d)", progress["retry_in"] or 3, progress["attempt"] or 1, progress["max_retries"] or 3))
         elseif progress["status"] == "network_retry" then
             show(string.format("{\\c&H00FFFF&}Connection/API drop - retry in %ds (%d/%d)", progress["retry_in"] or 2, progress["attempt"] or 1, progress["max_retries"] or 3))
-        elseif total_sec == nil or total_sec <= 0 then
-            show(string.format("[%s] translating %s%s", short_model, format_time(pos_sec), lines_info))
-        elseif pos_sec >= total_sec then
-            local bar = make_progress_bar(100, 16)
-            show(string.format("[%s] %s 100%%%s", short_model, bar, lines_info))
+        elseif progress["format"] == "ass" then
+            local lines_done = progress["lines_done"] or 0
+            local total_lines = progress["total_lines"] or 1
+            local pct = total_lines > 0 and math.min(100, math.floor(lines_done / total_lines * 100)) or 0
+            local bar = make_progress_bar(pct, 14)
+            show(string.format("[%s] [ASS] %s %d%% (%d/%d lines)", short_model, bar, pct, lines_done, total_lines))
         else
-            local pct = math.min(100, math.floor(pos_sec / total_sec * 100))
-            local bar = make_progress_bar(pct, 16)
-            show(string.format("[%s] %s %d%% (%s / %s)%s", short_model, bar, pct, format_time(pos_sec), format_time(total_sec), lines_info))
+            local total_sec = mp.get_property_native("duration/full", nil)
+            local pos_sec = (progress["last_timestamp_millis"] and progress["last_timestamp_millis"][2] or 0) / 1000
+            local lines_info = progress["lines_done"] and string.format(" (%d lines)", progress["lines_done"]) or ""
+            if total_sec == nil or total_sec <= 0 then
+                show(string.format("[%s] translating %s%s", short_model, format_time(pos_sec), lines_info))
+            elseif pos_sec >= total_sec then
+                local bar = make_progress_bar(100, 16)
+                show(string.format("[%s] %s 100%%%s", short_model, bar, lines_info))
+            else
+                local pct = math.min(100, math.floor(pos_sec / total_sec * 100))
+                local bar = make_progress_bar(pct, 16)
+                show(string.format("[%s] %s %d%% (%s / %s)%s", short_model, bar, pct, format_time(pos_sec), format_time(total_sec), lines_info))
+            end
         end
     end)
 end
@@ -779,9 +825,16 @@ local function do_progressive_translate()
         return abort_session(url_err)
     end
 
+    local sub_format = detect_sub_format(sub_track, ext_sub_url)
+    if sub_format == "ass" then
+        msg.info("Detected ASS subtitle track; routing to whole-file ASS translation")
+        abort_session()
+        return do_full_translate("ass")
+    end
+
     -- Set output path
     show("initializing")
-    local output_dir, srt_path, lang_code = resolve_output_path(ext_sub_url)
+    local output_dir, srt_path, lang_code = resolve_output_path(ext_sub_url, sub_format)
     msg.info("Save file to", srt_path)
     session.output_dir = output_dir
     session.srt_path = srt_path
