@@ -70,7 +70,7 @@ Key settings include:
 ## Tested Models & Providers
 
 - **OpenRouter**:
-  - `openai/gpt-5.6-luna` (Recommended for cost/speed)
+  - `openai/gpt-6-luna` (Recommended for cost/accuracy)
   - `google/gemini-3.8-flash`
   - `z-ai/glm-5.3-flash`
   - `deepseek/deepseek-v4.1-flash`
