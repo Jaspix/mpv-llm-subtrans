@@ -56,7 +56,9 @@ CRITICAL RULES:
      [20] Hablo de los <i>otros</i> fenómenos de circo sin cerebro.
      [21] Parece que ahora le ponen nombre a <i>todo</i>.
 5. NEVER insert annotations, brackets, or commentary like [seguirá], [continúa], or [notes] into the dialogue unless it was in the original line.
-6. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
+6. Romaji / Japanese song lyrics:
+   - DO NOT translate Japanese Romaji (romanized Japanese song lyrics or karaoke). Keep Romaji / Japanese transliterated text EXACTLY as-is in the original romaji.
+7. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
 
 {extra_prompt}\
 """
@@ -74,6 +76,7 @@ CRITICAL RULES:
 4. Subtitle Linebreaks (\\N):
    - The literal characters \\N represent a subtitle linebreak for screen typesetting.
    - If an input line contains \\N, ALWAYS keep \\N intact in your translation at an appropriate phrase break.
+   - For long dialogue or song lyrics (e.g. over 50-60 characters), you may insert \\N at a natural phrase boundary or clause break to balance screen lines.
    - NEVER output consecutive \\N (e.g. NEVER write \\N\\N).
    - NEVER convert \\N into spaces, literal newlines, or remove it.
    Example:
@@ -88,7 +91,10 @@ CRITICAL RULES:
    - Even if a sentence spans multiple lines, translate each line piece-by-piece so line boundaries match audio timing.
    - DO NOT complete the sentence early in the first line! Translate ONLY the words that belong to that line.
 7. NEVER insert annotations, brackets, or commentary like [seguirá], [continúa], or [notes] into the dialogue unless it was in the original line.
-8. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
+8. Romaji / Japanese song lyrics and names:
+   - DO NOT translate Japanese Romaji (romanized Japanese song lyrics or karaoke, e.g. 'yuukan na joukan ga koutai ya', 'terashiteite yo, saigo made', 'daisuki', 'chuu', or isolated syllables like 'tai', 'ku', 'tsu', 'na', 'kan').
+   - Keep Romaji / Japanese transliterated text EXACTLY as-is in the original romaji.
+9. Output ONLY the translated [ID] lines in plain text. No code blocks, no markdown, no conversational filler.
 
 {extra_prompt}\
 """

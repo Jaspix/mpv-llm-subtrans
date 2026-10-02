@@ -107,12 +107,21 @@ CODE_PATTERNS = [
 
 # Styles typically containing Japanese/Romaji song lyrics
 UNTRANSLATABLE_STYLE_PATTERNS = [
-    re.compile(r"_RO$", re.IGNORECASE),
-    re.compile(r"_JP$", re.IGNORECASE),
+    re.compile(r"[-_]R$", re.IGNORECASE),
+    re.compile(r"[-_]RO$", re.IGNORECASE),
+    re.compile(r"[-_]ROM$", re.IGNORECASE),
+    re.compile(r"[-_]ROMAJI$", re.IGNORECASE),
+    re.compile(r"[-_]JP$", re.IGNORECASE),
+    re.compile(r"[-_]JA$", re.IGNORECASE),
+    re.compile(r"[-_]KAN$", re.IGNORECASE),
+    re.compile(r"[-_]KANJI$", re.IGNORECASE),
+    re.compile(r"[-_]K$", re.IGNORECASE),
     re.compile(r"Romaji", re.IGNORECASE),
+    re.compile(r"Romanji", re.IGNORECASE),
     re.compile(r"Japanese", re.IGNORECASE),
     re.compile(r"Kanji", re.IGNORECASE),
     re.compile(r"Karaoke", re.IGNORECASE),
+    re.compile(r"Furigana", re.IGNORECASE),
 ]
 
 # Inline style conversions between ASS and HTML
@@ -304,6 +313,38 @@ def is_vector_drawing(text: str) -> bool:
     return False
 
 
+ROMAJI_PARTICLES = {
+    "wa", "ga", "wo", "no", "ni", "de", "to", "mo", "ka", "na", "ne", "yo", "te", "ta", "ba", "sa", "da", "kara", "made"
+}
+COMMON_ROMAJI_WORDS = {
+    "daisuki", "chuu", "perochuu", "kokoro", "yume", "sekai", "mirai", "tsubasa", "sora", "hikari",
+    "namida", "ai", "koi", "yoru", "asa", "kaze", "koe", "uta", "kimi", "boku", "watashi", "anata",
+    "hitori", "futari", "subete", "hontou", "jibun", "ima", "ashita", "kibou", "yuuki", "inochi",
+    "omoi", "itsumo", "kanashimi", "yorokobi", "yuukan", "joukan", "koutai", "saigo", "terashiteite",
+    "shite", "koutaiya", "doushite", "nani", "doko", "itsu", "kore", "sore", "are", "demo", "kedo",
+    "desu", "masu", "motto", "zutto", "sukoshi", "chotto", "kudasai", "arigatou", "sayonara"
+}
+KANA_SYLLABLE_PAT = re.compile(
+    r"^(?:[ksthmyrwgzdbpj]?y?[aiueo]|sh[io]|ch[io]|ts[u]|f[u]|j[io]|z[u]|d[u]|n|[aiueo]{2}|(?:tai|kai|dai|sai|mai|nai|hai|bai|pai|tou|kou|dou|sou|mou|nou|hou|bou|pou))$",
+    re.IGNORECASE
+)
+
+def is_romaji_word(w: str) -> bool:
+    w = w.lower().rstrip("!?,.:;~-")
+    return w in ROMAJI_PARTICLES or w in COMMON_ROMAJI_WORDS or bool(KANA_SYLLABLE_PAT.match(w))
+
+def is_multiword_romaji(text: str) -> bool:
+    """Check if a multi-word phrase is romanized Japanese song lyrics."""
+    clean = re.sub(r"\{\\?[^}]*\}", "", text)
+    clean = re.sub(r"\\[Nnh]", " ", clean)
+    words = re.findall(r"[a-zA-Z]+(?:-[a-zA-Z]+)?", clean)
+    if len(words) < 3:
+        return False
+    romaji_matches = sum(1 for w in words if is_romaji_word(w))
+    particle_matches = sum(1 for w in words if w.lower().rstrip("!?,.:;~-") in ROMAJI_PARTICLES)
+    return (romaji_matches / len(words) >= 0.70 and particle_matches >= 1)
+
+
 def is_karaoke_or_fx(event: ASSEvent) -> bool:
     """Check if the event is a generated karaoke singing aid or decomposed particle effect."""
     # Syllable timing tags (\k, \kf, \ko, \K)
@@ -315,9 +356,13 @@ def is_karaoke_or_fx(event: ASSEvent) -> bool:
         duration = event.end_millis - event.start_millis
         if duration < 200:
             return True
-        # Decomposed letter animation: single letter / non-word fragment
         plain = extract_plain_text(event.text).strip()
-        if len(plain) <= 1:
+        # Decomposed letter or single syllable / single-word fragment (e.g. 'tai', 'ku', 'tsu')
+        words = plain.split()
+        if len(words) <= 1:
+            return True
+        # Multi-word Romaji song lyrics generated with fx
+        if is_multiword_romaji(plain):
             return True
         # Multi-word readable song lyric lines generated with fx (e.g. ED English, OP TL) are translatable
         return False
@@ -358,6 +403,7 @@ def is_translatable_event(event: ASSEvent) -> bool:
     - Untranslatable styles (Romaji, Japanese lyrics)
     - Intra-word frame-by-frame letter animations
     - Programming source code and code filenames
+    - Multi-word Romaji Japanese lyrics
     - Purely blank or tag-only lines
     """
     if event.is_comment:
@@ -376,6 +422,9 @@ def is_translatable_event(event: ASSEvent) -> bool:
         return False
 
     if is_programming_code(event.text):
+        return False
+
+    if is_multiword_romaji(event.text):
         return False
 
     # Check if there is actual human-readable text after removing tags
@@ -566,12 +615,21 @@ def scale_sign_fscx(
 
     style_lower = style.lower()
     name_lower = name.lower()
+
+    # Never scale dialogue lines or song lyrics
+    if any(kw in style_lower for kw in ("op", "ed", "song", "lyric", "music", "ins", "karaoke", "sing", "theme")):
+        return prefix_tags
+    if any(kw in style_lower for kw in ("default", "dialogue", "main", "alt", "top", "overlap", "tlnote", "note")):
+        return prefix_tags
+
     is_sign = (
         "sign" in style_lower
         or "title" in style_lower
-        or "text" in style_lower
-        or name_lower in ("sign", "ide", "title", "screen", "ui")
-        or (style_lower not in ("default", "dialogue", "main") and "default" not in style_lower)
+        or "screen" in style_lower
+        or "ui" in style_lower
+        or "board" in style_lower
+        or "banner" in style_lower
+        or name_lower in ("sign", "ide", "title", "screen", "ui", "board", "phone", "tv")
     )
     if not is_sign:
         return prefix_tags
